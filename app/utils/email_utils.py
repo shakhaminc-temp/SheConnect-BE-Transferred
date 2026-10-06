@@ -5,7 +5,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from app.utils.email_templates import get_otp_email_html
+from app.utils.email_templates import get_otp_email_html, get_sos_email_html, get_low_battery_email_html
 
 conf = ConnectionConfig(
     MAIL_USERNAME=os.getenv("MAIL_USERNAME"),
@@ -32,6 +32,38 @@ async def send_otp_email(email: str, otp: str):
     fm = FastMail(conf)
     await fm.send_message(message)
 
+import httpx
+
+async def get_location_name(lat: float, lng: float) -> str:
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}"
+        async with httpx.AsyncClient() as client:
+            headers = {"User-Agent": "SheConnectApp/1.0 (Emergency Alert System)"}
+            response = await client.get(url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                return data.get("display_name", "")
+    except Exception as e:
+        logger.error(f"Geocoding failed: {e}")
+    return ""
+
+async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
+    if not emails:
+        return
+        
+    if not location_name:
+        location_name = await get_location_name(lat, lng)
+        
+    html_body = get_sos_email_html(user_name, lat, lng, location_name)
+    message = MessageSchema(
+        subject=f"SOS ALERT: {user_name} needs immediate help!",
+        recipients=emails,
+        body=html_body,
+        subtype="html"
+    )
+    fm = FastMail(conf)
+    await fm.send_message(message)
+
 
 def load_allowed_emails(file_path="app/scripts/female_emails.csv"):
     allowed = set()
@@ -50,3 +82,20 @@ def load_allowed_emails(file_path="app/scripts/female_emails.csv"):
             allowed.add(row["email"].strip().lower())
 
     return allowed
+
+async def send_low_battery_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
+    if not emails:
+        return
+        
+    if not location_name:
+        location_name = await get_location_name(lat, lng)
+        
+    html_body = get_low_battery_email_html(user_name, lat, lng, location_name)
+    message = MessageSchema(
+        subject=f"⚠️ LOW BATTERY ALERT: {user_name}'s phone is dying!",
+        recipients=emails,
+        body=html_body,
+        subtype="html"
+    )
+    fm = FastMail(conf)
+    await fm.send_message(message)

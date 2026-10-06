@@ -7,6 +7,7 @@ from app.models.travel_route import TravelRoute
 from app.models.request import Request
 from app.models.chat import Chat
 from app.models.admin import Admin
+from app.models.carpool import CarpoolRide, CarpoolRequest, CarpoolPayment
 
 __all__ = [
     "College",
@@ -18,4 +19,7 @@ __all__ = [
     "Request",
     "Chat",
     "Admin",
+    "CarpoolRide",
+    "CarpoolRequest",
+    "CarpoolPayment",
 ]

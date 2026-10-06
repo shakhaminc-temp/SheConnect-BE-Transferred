@@ -25,6 +25,8 @@ async def home():
 def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
+
+
 # ================= SIGNUP =================
 @router.post("/signup")
 async def signup(
@@ -61,23 +63,14 @@ async def signup(
     if not is_valid:
         raise HTTPException(status_code=400, detail=message)
 
-    
-    college = db.query(College).filter(
-        College.college_id == user.college_id
-    ).first()
-
-    if not college:
-        raise HTTPException(status_code=400, detail="Invalid college")
-
     anonymous_id = str(uuid.uuid4())[:5]
     existing_user.name = user.name
     existing_user.phone_no = user.phone_no
     existing_user.password = hash_password(user.password)
-    existing_user.college_id = user.college_id
     existing_user.is_verified = False
     existing_user.is_active = True
+    existing_user.college_id = user.college_id
     existing_user.anonymous_id = anonymous_id
-    existing_user.last_otp_sent_at = datetime.now()
 
     # Clear existing emergency contacts to prevent duplicates on re-attempted signup
     db.query(EmergencyContact).filter(EmergencyContact.user_id == existing_user.user_id).delete(synchronize_session=False)
@@ -88,21 +81,23 @@ async def signup(
             user_id=existing_user.user_id,
             emergency_name=contact_data.emergency_name,
             phone_no=contact_data.phone_no,
-            gender=contact_data.gender
+            email=contact_data.email
         )
         db.add(new_contact)
 
+    otp = generate_otp()
+    otp_token = create_otp_token(existing_user.email_id, otp, "signup")
+
+    existing_user.last_otp_sent_at = datetime.now()
     db.commit()
     db.refresh(existing_user)
 
-    otp = generate_otp()
-    otp_token = create_otp_token(user.email_id, otp, "signup")
-    background_tasks.add_task(send_otp_email, user.email_id, otp)
+    background_tasks.add_task(send_otp_email, existing_user.email_id, otp)
 
     return {
-        "message": "Signup successful. OTP sent to email.",
-        "otp_token": otp_token,
-        "anonymous_id": anonymous_id
+        "message": "Signup successful. OTP sent.",
+        "anonymous_id": anonymous_id,
+        "otp_token": otp_token
     }
 
 # ================= VERIFY SIGNUP OTP =================

@@ -24,6 +24,7 @@ class User(Base):
 
     is_active = Column(Boolean, default=False) 
     is_verified = Column(Boolean, default=False)
+    is_aadhaar_verified = Column(Boolean, default=False)
 
     last_otp_sent_at = Column(DateTime, nullable=True)
 
@@ -33,5 +34,10 @@ class User(Base):
 
     travels = relationship("Travel", back_populates="user")
     blogs = relationship("Blog", back_populates="user")
+    emergency_contacts = relationship("EmergencyContact", back_populates="user")
 
     college = relationship("College", back_populates="users")
+
+    @property
+    def rating(self) -> float:
+        return round(4.0 + (self.user_id % 10) / 10.0, 1)

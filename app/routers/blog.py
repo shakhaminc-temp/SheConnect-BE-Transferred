@@ -46,7 +46,9 @@ def get_all_blogs(db: Session = Depends(get_db)):
         response_data.append({
             "id": blog.blog_id,
             "title": blog.title,
-            "content": blog.content
+            "content": blog.content,
+            "created_at": blog.created_at.isoformat() if blog.created_at else None,
+            "author_name": blog.user.name if blog.user else "Anonymous"
         })
         
     return {"blogs": response_data}

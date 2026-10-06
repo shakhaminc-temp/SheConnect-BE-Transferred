@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_
 from typing import List, Dict
 import time
@@ -43,7 +43,7 @@ def get_user_from_token(token: str, db: Session) -> User:
     except JWTError:
         return None
     
-    user = db.query(User).filter(
+    user = db.query(User).options(joinedload(User.college)).filter(
         User.user_id == user_id,
         User.is_active == True,
         User.is_verified == True
@@ -89,6 +89,21 @@ async def websocket_endpoint(
                     )
                 continue
 
+            # Handle emergency event
+            if event_type == "emergency":
+                if receiver_id and receiver_id != user.user_id:
+                    await manager.send_personal_message(
+                        {
+                            "type": "emergency",
+                            "senderId": user.user_id,
+                            "message": "EMERGENCY: User needs help!",
+                            "realName": user.name,
+                            "realCollege": user.college.college_name if user.college else None
+                        },
+                        receiver_id
+                    )
+                continue
+
             # Handle location sharing event
             if event_type == "location":
                 lat = data.get("lat")
@@ -130,6 +145,13 @@ async def websocket_endpoint(
                         Chat.chat_id.in_(chat_ids),
                         Chat.receiver_id == user.user_id
                     ).update({"is_read": True}, synchronize_session=False)
+
+                    from app.models.carpool import CarpoolChat
+                    db.query(CarpoolChat).filter(
+                        CarpoolChat.chat_id.in_(chat_ids),
+                        CarpoolChat.receiver_id == user.user_id
+                    ).update({"is_read": True}, synchronize_session=False)
+
                     db.commit()
                     
                     if receiver_id and receiver_id != user.user_id:
@@ -165,26 +187,79 @@ async def websocket_endpoint(
                 await websocket.send_json({"error": "Receiver not found"})
                 continue
 
-            # Need to get request ID from an accepted request
-            accepted_request = db.query(Request).filter(
-                Request.status == "accepted",
-                or_(
-                    and_(Request.sent_by == user.user_id, Request.sent_to == receiver_id),
-                    and_(Request.sent_by == receiver_id, Request.sent_to == user.user_id)
-                ),
-                Request.is_active == True
-            ).first()
+            is_carpool = False
+            request_id_from_client = data.get("request_id")
+            accepted_request = None
+
+            if request_id_from_client:
+                try:
+                    request_id_from_client = int(request_id_from_client)
+                    accepted_request = db.query(Request).filter(
+                        Request.request_id == request_id_from_client,
+                        Request.status == "accepted",
+                        or_(
+                            and_(Request.sent_by == user.user_id, Request.sent_to == receiver_id),
+                            and_(Request.sent_by == receiver_id, Request.sent_to == user.user_id)
+                        )
+                    ).first()
+                    
+                    if not accepted_request:
+                        from app.models.carpool import CarpoolRequest, CarpoolRide
+                        accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
+                            CarpoolRequest.request_id == request_id_from_client,
+                            CarpoolRequest.status == "APPROVED",
+                            or_(
+                                and_(CarpoolRequest.rider_id == user.user_id, CarpoolRide.driver_id == receiver_id),
+                                and_(CarpoolRequest.rider_id == receiver_id, CarpoolRide.driver_id == user.user_id)
+                            )
+                        ).first()
+                        if accepted_request:
+                            is_carpool = True
+                except (ValueError, TypeError):
+                    pass
+
+            if not accepted_request:
+                # Need to get request ID from an accepted request
+                accepted_request = db.query(Request).filter(
+                    Request.status == "accepted",
+                    or_(
+                        and_(Request.sent_by == user.user_id, Request.sent_to == receiver_id),
+                        and_(Request.sent_by == receiver_id, Request.sent_to == user.user_id)
+                    ),
+                    Request.is_active == True
+                ).first()
+
+            if not accepted_request:
+                from app.models.carpool import CarpoolRequest, CarpoolRide
+                accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
+                    CarpoolRequest.status == "APPROVED",
+                    or_(
+                        and_(CarpoolRequest.rider_id == user.user_id, CarpoolRide.driver_id == receiver_id),
+                        and_(CarpoolRequest.rider_id == receiver_id, CarpoolRide.driver_id == user.user_id)
+                    )
+                ).first()
+                if accepted_request:
+                    is_carpool = True
 
             if not accepted_request:
                 await websocket.send_json({"error": "No accepted travel request with this user."})
                 continue
             
-            new_chat = Chat(
-                request_id=accepted_request.request_id,
-                sender_id=user.user_id,
-                receiver_id=receiver_id,
-                message=message_text
-            )
+            if is_carpool:
+                from app.models.carpool import CarpoolChat
+                new_chat = CarpoolChat(
+                    request_id=accepted_request.request_id,
+                    sender_id=user.user_id,
+                    receiver_id=receiver_id,
+                    message=message_text
+                )
+            else:
+                new_chat = Chat(
+                    request_id=accepted_request.request_id,
+                    sender_id=user.user_id,
+                    receiver_id=receiver_id,
+                    message=message_text
+                )
             
             try:
                 db.add(new_chat)
@@ -216,7 +291,8 @@ async def websocket_endpoint(
                     "chat_id": chat_id,
                     "receiverId": receiver_id,
                     "message": message_text,
-                    "created_at": created_at
+                    "created_at": created_at,
+                    "placeholderId": data.get("placeholderId")
                 }
             )
 
@@ -286,17 +362,91 @@ async def websocket_endpoint(
 # 
 #     return {"message": "Messages marked as read"}
 # 
+@router.get("/history", response_model=dict)
+def get_chat_history_overview(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    chats = db.query(Chat).filter(
+        or_(Chat.sender_id == current_user.user_id, Chat.receiver_id == current_user.user_id),
+        Chat.is_active == True
+    ).all()
+    
+    from app.models.carpool import CarpoolChat
+    carpool_chats = db.query(CarpoolChat).filter(
+        or_(CarpoolChat.sender_id == current_user.user_id, CarpoolChat.receiver_id == current_user.user_id),
+        CarpoolChat.is_active == True
+    ).all()
+
+    # Group by (request_id, is_carpool) to isolate chats per ride
+    history = {} 
+    for c in chats:
+        key = (c.request_id, False)
+        if key not in history or (c.created_at and (not history[key].created_at or c.created_at > history[key].created_at)):
+            history[key] = c
+            
+    for c in carpool_chats:
+        key = (c.request_id, True)
+        if key not in history or (c.created_at and (not history[key].created_at or c.created_at > history[key].created_at)):
+            history[key] = c
+            
+    # Fetch requests to check privacy mode
+    request_ids = [k[0] for k in history.keys() if not k[1]]
+    requests = db.query(Request).filter(Request.request_id.in_(request_ids)).all() if request_ids else []
+    request_map = {r.request_id: r for r in requests}
+    
+    # Fetch users
+    partner_ids = set()
+    for msg in history.values():
+        partner_ids.add(msg.sender_id if msg.sender_id != current_user.user_id else msg.receiver_id)
+        
+    users = db.query(User).filter(User.user_id.in_(list(partner_ids))).all()
+    user_map = {u.user_id: u for u in users}
+
+    result = []
+    for (req_id, is_carpool), msg in history.items():
+        partner_id = msg.sender_id if msg.sender_id != current_user.user_id else msg.receiver_id
+        u = user_map.get(partner_id)
+        if not u:
+            continue
+            
+        is_anonymous = False
+        if not is_carpool:
+            req = request_map.get(req_id)
+            if req:
+                if req.sent_by == partner_id:
+                    is_anonymous = (req.sender_privacy_mode == 'ANONYMOUS')
+                else:
+                    is_anonymous = (req.receiver_privacy_mode == 'ANONYMOUS')
+                    
+        result.append({
+            "request_id": req_id,
+            "partner_id": u.user_id,
+            "partner_name": None if is_anonymous else u.name,
+            "partner_college": None if is_anonymous else (u.college.college_name if u.college else None),
+            "partner_anonymous_id": u.anonymous_id,
+            "is_anonymous": is_anonymous,
+            "last_message": msg.message,
+            "last_message_time": msg.created_at,
+            "is_read": msg.is_read if msg.receiver_id == current_user.user_id else True
+        })
+        
+    result.sort(key=lambda x: (x["last_message_time"] or datetime.min), reverse=True)
+    
+    return {"history": result}
+
 @router.get("/{userId}", response_model=dict)
 def get_chat_messages(
     userId: int,
+    request_id: int = Query(None),
     limit: int = Query(50, le=100),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Guard: only allow reading chats with users you have an accepted request with
+    # Guard: only allow reading chats with users you have an accepted or completed request with
     accepted_request = db.query(Request).filter(
-        Request.status == "accepted",
+        Request.status.in_(["accepted", "completed"]),
         or_(
             and_(Request.sent_by == current_user.user_id, Request.sent_to == userId),
             and_(Request.sent_by == userId, Request.sent_to == current_user.user_id)
@@ -305,18 +455,60 @@ def get_chat_messages(
     ).first()
 
     if not accepted_request:
+        from app.models.carpool import CarpoolRequest, CarpoolRide
+        accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
+            CarpoolRequest.status.in_(["APPROVED", "COMPLETED"]),
+            or_(
+                and_(CarpoolRequest.rider_id == current_user.user_id, CarpoolRide.driver_id == userId),
+                and_(CarpoolRequest.rider_id == userId, CarpoolRide.driver_id == current_user.user_id)
+            )
+        ).first()
+
+    if not accepted_request:
         raise HTTPException(
             status_code=403,
             detail="You can only view chats with users you have an accepted travel request with."
         )
 
-    chats = db.query(Chat).filter(
-        or_(
-            and_(Chat.sender_id == current_user.user_id, Chat.receiver_id == userId),
-            and_(Chat.sender_id == userId, Chat.receiver_id == current_user.user_id)
-        ),
-        Chat.is_active == True
-    ).order_by(Chat.created_at.asc()).offset(offset).limit(limit).all()
+    if request_id:
+        chats = db.query(Chat).filter(
+            Chat.request_id == request_id,
+            or_(
+                and_(Chat.sender_id == current_user.user_id, Chat.receiver_id == userId),
+                and_(Chat.sender_id == userId, Chat.receiver_id == current_user.user_id)
+            ),
+            Chat.is_active == True
+        ).all()
+
+        from app.models.carpool import CarpoolChat
+        carpool_chats = db.query(CarpoolChat).filter(
+            CarpoolChat.request_id == request_id,
+            or_(
+                and_(CarpoolChat.sender_id == current_user.user_id, CarpoolChat.receiver_id == userId),
+                and_(CarpoolChat.sender_id == userId, CarpoolChat.receiver_id == current_user.user_id)
+            ),
+            CarpoolChat.is_active == True
+        ).all()
+    else:
+        chats = db.query(Chat).filter(
+            or_(
+                and_(Chat.sender_id == current_user.user_id, Chat.receiver_id == userId),
+                and_(Chat.sender_id == userId, Chat.receiver_id == current_user.user_id)
+            ),
+            Chat.is_active == True
+        ).all()
+
+        from app.models.carpool import CarpoolChat
+        carpool_chats = db.query(CarpoolChat).filter(
+            or_(
+                and_(CarpoolChat.sender_id == current_user.user_id, CarpoolChat.receiver_id == userId),
+                and_(CarpoolChat.sender_id == userId, CarpoolChat.receiver_id == current_user.user_id)
+            ),
+            CarpoolChat.is_active == True
+        ).all()
+    
+    all_chats = sorted(chats + carpool_chats, key=lambda x: (x.created_at or datetime.min))
+    paginated_chats = all_chats[offset:offset+limit]
 
     messages_response = [
         {
@@ -326,12 +518,12 @@ def get_chat_messages(
             "is_read": chat.is_read,
             "created_at": chat.created_at
         }
-        for chat in chats
+        for chat in paginated_chats
     ]
 
     return {
         "messages": messages_response,
         "limit": limit,
         "offset": offset,
-        "total_returned": len(chats)
+        "total_returned": len(paginated_chats)
     }

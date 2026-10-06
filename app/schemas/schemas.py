@@ -20,13 +20,13 @@ class Gender(str, Enum):
 class EmergencyContactSchema(BaseModel):
     emergency_name: Annotated[str, Field(min_length=1, max_length=50, strip_whitespace=True)]
     phone_no: Annotated[str, Field(min_length=10, max_length=15, pattern=r'^\+?[0-9]+$')]
-    gender: Gender
+    email: EmailStr
 
 class EmergencyContactResponse(BaseModel):
     emergency_id: int
     emergency_name: str
     phone_no: str
-    gender: str
+    email: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -41,6 +41,8 @@ class UserSignup(BaseModel):
     college_id: int
     emergency_contacts: List[EmergencyContactSchema]
 
+
+
     @model_validator(mode='after')
     def check_passwords_match(self) -> 'UserSignup':
         if self.password != self.confirm_password:
@@ -51,6 +53,7 @@ class Login(BaseModel):
     email_id: EmailStr
     password: str
 
+
 class UserProfile(BaseModel):
     user_id: int
     name: Optional[str] = None
@@ -60,6 +63,7 @@ class UserProfile(BaseModel):
     anonymous_id: Optional[str] = None
     is_active: bool
     is_verified: bool
+    emergency_contacts: List[EmergencyContactResponse] = []
 
     class Config:
         from_attributes = True
@@ -181,3 +185,8 @@ class ResendOTPRequest(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+
+class SOSRequest(BaseModel):
+    lat: float
+    lng: float
+    location_name: Optional[str] = None

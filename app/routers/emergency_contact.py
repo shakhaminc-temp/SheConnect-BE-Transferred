@@ -40,6 +40,7 @@ def add_emergency_contact(
     if existing_contact:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This phone number is already registered as an emergency contact.")
 
+    # We use model_dump but we excluded gender from schema, so it's safe.
     new_contact = EmergencyContact(user_id=current_user.user_id, **contact_data.model_dump())
     db.add(new_contact)
     db.commit()
@@ -114,3 +115,83 @@ def delete_emergency_contact(
     contact.is_active = False
     contact.deleted_at = datetime.now(timezone.utc)
     db.commit()
+
+from app.schemas.schemas import SOSRequest
+from app.utils.email_utils import send_sos_email, send_low_battery_email
+from fastapi import BackgroundTasks
+
+@router.post("/sos", status_code=status.HTTP_200_OK)
+async def send_sos_alert(
+    sos_data: SOSRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Sends an SOS alert with live location to all emergency contacts.
+    """
+    contacts = db.query(EmergencyContact).filter(
+        EmergencyContact.user_id == current_user.user_id,
+        EmergencyContact.is_active == True
+    ).all()
+    
+    # Filter valid emails
+    emails = [
+        contact.email.strip() for contact in contacts 
+        if contact.email and contact.email.strip() != ""
+    ]
+    
+    if not emails:
+        raise HTTPException(status_code=400, detail="No valid emergency contacts found with an email address. Please update your profile.")
+    
+    try:
+        # Run async email sending in background
+        background_tasks.add_task(
+            send_sos_email, 
+            emails, 
+            current_user.name or "User", 
+            sos_data.lat, 
+            sos_data.lng,
+            sos_data.location_name or ""
+        )
+        return {"message": "SOS alert sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to queue SOS alerts: {str(e)}")
+
+@router.post("/low-battery", status_code=status.HTTP_200_OK)
+async def send_low_battery_alert(
+    location_data: SOSRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Sends a pre-emptive low battery alert with live location to all emergency contacts.
+    """
+    contacts = db.query(EmergencyContact).filter(
+        EmergencyContact.user_id == current_user.user_id,
+        EmergencyContact.is_active == True
+    ).all()
+    
+    # Filter valid emails
+    emails = [
+        contact.email.strip() for contact in contacts 
+        if contact.email and contact.email.strip() != ""
+    ]
+    
+    if not emails:
+        raise HTTPException(status_code=400, detail="No valid emergency contacts found with an email address. Please update your profile.")
+    
+    try:
+        # Run async email sending in background
+        background_tasks.add_task(
+            send_low_battery_email, 
+            emails, 
+            current_user.name or "User", 
+            location_data.lat, 
+            location_data.lng,
+            location_data.location_name or ""
+        )
+        return {"message": "Low battery alert sent successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to queue low battery alerts: {str(e)}")

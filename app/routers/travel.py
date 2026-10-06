@@ -282,6 +282,7 @@ def get_trip_matches(
                 "start_location": travel.start_label,
                 "end_location": travel.end_label,
                 "mode_of_transport": travel.mode_of_transport,
+                "rating": round(4.0 + (user.user_id % 10) / 10.0, 1),
                 "route_overlap": round(overlap, 2) if overlap else 0,
                 "start_distance_m": round(start_dist, 2) if start_dist else 0,
                 "end_distance_m": round(end_dist, 2) if end_dist else 0
@@ -352,30 +353,32 @@ def get_my_requests(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    received_reqs = db.query(Request).filter(
-        Request.sent_to == current_user.user_id,
-        Request.is_active == True,
-        Request.status.in_(["pending", "accepted"])
-    ).all()
+    from sqlalchemy.orm import joinedload
     
-    sent_reqs = db.query(Request).filter(
-        Request.sent_by == current_user.user_id,
+    base_query = db.query(Request).options(
+        joinedload(Request.sender).joinedload(User.college),
+        joinedload(Request.receiver).joinedload(User.college),
+        joinedload(Request.sender_travel),
+        joinedload(Request.receiver_travel)
+    ).filter(
         Request.is_active == True,
         Request.status.in_(["pending", "accepted"])
-    ).all()
+    )
+
+    received_reqs = base_query.filter(Request.sent_to == current_user.user_id).all()
+    sent_reqs = base_query.filter(Request.sent_by == current_user.user_id).all()
 
     def enrich_request(req, is_received):
-        partner_id = req.sent_by if is_received else req.sent_to
-        partner_travel_id = req.sender_travel_id if is_received else req.receiver_travel_id
-        partner_user = db.query(User).filter(User.user_id == partner_id).first()
-        partner_travel = db.query(Travel).filter(Travel.travel_id == partner_travel_id).first()
+        partner_user = req.sender if is_received else req.receiver
+        partner_travel = req.sender_travel if is_received else req.receiver_travel
         
-        partner_college = None
-        if partner_user and partner_user.college_id:
-            from app.models.college import College
-            college = db.query(College).filter(College.college_id == partner_user.college_id).first()
-            if college:
-                partner_college = college.college_name
+        partner_college = partner_user.college.college_name if partner_user and partner_user.college else None
+        
+        is_anonymous = False
+        if is_received:
+            is_anonymous = (req.sender_privacy_mode == 'ANONYMOUS')
+        else:
+            is_anonymous = (req.receiver_privacy_mode == 'ANONYMOUS' or req.receiver_privacy_mode is None)
 
         return {
             "request_id": req.request_id,
@@ -387,10 +390,11 @@ def get_my_requests(
             "created_at": req.created_at,
             "sender_privacy_mode": req.sender_privacy_mode,
             "receiver_privacy_mode": req.receiver_privacy_mode,
-            "partner_name": partner_user.name if partner_user else None,
-            "partner_college": partner_college,
-            "partner_phone": partner_user.phone_no if partner_user else None,
+            "partner_name": None if is_anonymous else (partner_user.name if partner_user else None),
+            "partner_college": None if is_anonymous else partner_college,
+            "partner_phone": None if is_anonymous else (partner_user.phone_no if partner_user else None),
             "partner_anonymous_id": partner_user.anonymous_id if partner_user else None,
+            "partner_rating": round(4.0 + ((partner_user.user_id if partner_user else 0) % 10) / 10.0, 1),
             "partner_start": partner_travel.start_label if partner_travel else None,
             "partner_end": partner_travel.end_label if partner_travel else None,
         }
@@ -478,9 +482,9 @@ def end_trip(
         req.status = "completed"
         accepted_req_ids.append(req.request_id)
 
-    # Hard-delete chat messages associated with these completed requests for privacy
-    if accepted_req_ids:
-        db.query(Chat).filter(Chat.request_id.in_(accepted_req_ids)).delete(synchronize_session=False)
+    # Removed hard-delete of chat messages so they can appear in chat history
+    # if accepted_req_ids:
+    #     db.query(Chat).filter(Chat.request_id.in_(accepted_req_ids)).delete(synchronize_session=False)
 
     # Also resolve any pending requests so they don't remain stuck
     pending_requests = db.query(Request).filter(
