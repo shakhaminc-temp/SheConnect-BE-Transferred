@@ -1,0 +1,42 @@
+# Environment variables
+.env
+.env.*
+
+# Virtual environment
+.venv
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Distribution / Build
+*.egg-info/
+dist/
+build/
+
+# IDE configuration
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+Thumbs.db
+.DS_Store
+
+# Data files - contains sensitive user emails
+app/scripts/*.csv
+
+# Database dumps
+*.sql
+*.dump
+
+# Logs
+*.log
+
+# Project Documentation & API
+Docs/
+postman_collection.json

@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+psycopg2-binary
+pydantic[email]
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+alembic
+geoalchemy2
+fastapi-mail
+httpx
+watchfiles
+bcrypt
