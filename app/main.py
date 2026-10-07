@@ -23,14 +23,26 @@ from app.routers.emergency_contact import router as emergency_contact_router
 from app.routers.connect import router as connect_router
 from app.routers.carpool import router as carpool_router
 from app.utils.email_utils import load_allowed_emails
-from app.models import User
-
+from app.models import User, College
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def seed_initial_users():
+def seed_initial_data():
     db = SessionLocal()
     try:
+        # Seed Colleges
+        existing_colleges = db.query(College).first()
+        if not existing_colleges:
+            default_colleges = [
+                College(college_name="IMCC"),
+                College(college_name="JSPM"),
+                College(college_name="Modern College"),
+                College(college_name="Fergusson College"),
+                College(college_name="Symbiosis")
+            ]
+            db.add_all(default_colleges)
+            db.commit()
+
         allowed_emails = load_allowed_emails("app/scripts/female_emails.csv")
         existing_emails = {user.email_id for user in db.query(User.email_id).all()}
         
@@ -40,7 +52,7 @@ def seed_initial_users():
             db.add_all(new_users)
             db.commit()
     except Exception as e:
-        logger.error(f"Error seeding initial users: {e}")
+        logger.error(f"Error seeding initial data: {e}")
         db.rollback()
     finally:
         db.close()
@@ -53,7 +65,7 @@ async def lifespan(app: FastAPI):
             connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
             connection.commit()
         Base.metadata.create_all(bind=engine)
-        seed_initial_users()
+        seed_initial_data()
     except Exception as e:
         logger.error(f"An error occurred during startup: {e}")
     yield
