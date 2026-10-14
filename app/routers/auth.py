@@ -40,10 +40,19 @@ async def signup(
     ).first()
 
     if not existing_user:
-        raise HTTPException(status_code=403, detail="Email not allowed")
+        # Also check directly from CSV in case DB seed was skipped or newly added
+        csv_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "scripts", "female_emails.csv")
+        allowed_list = load_allowed_emails(csv_path)
+        if user.email_id.lower() in allowed_list:
+            existing_user = User(email_id=user.email_id.lower(), is_active=False, is_verified=False)
+            db.add(existing_user)
+            db.commit()
+            db.refresh(existing_user)
+        else:
+            raise HTTPException(status_code=403, detail="Email not allowed. Only registered college domain/allowed emails can sign up.")
 
     if existing_user.is_active:
-        raise HTTPException(status_code=400, detail="User already registered")
+        raise HTTPException(status_code=400, detail="User already registered. Please log in.")
 
 
     if user.phone_no:

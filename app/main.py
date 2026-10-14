@@ -43,8 +43,9 @@ def seed_initial_data():
             db.add_all(default_colleges)
             db.commit()
 
-        allowed_emails = load_allowed_emails("app/scripts/female_emails.csv")
-        existing_emails = {user.email_id for user in db.query(User.email_id).all()}
+        csv_path = os.path.join(os.path.dirname(__file__), "scripts", "female_emails.csv")
+        allowed_emails = load_allowed_emails(csv_path)
+        existing_emails = {user.email_id.lower() for user in db.query(User.email_id).all() if user.email_id}
         
         new_users = [User(email_id=email, is_active=False, is_verified=False) for email in allowed_emails if email not in existing_emails]
         
@@ -74,12 +75,16 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
-origins = [origin.strip() for origin in origins if origin.strip()]
+origins_env = os.getenv("CORS_ORIGINS", "*")
+if origins_env.strip() == "*":
+    origins = ["*"]
+else:
+    origins = [origin.strip() for origin in origins_env.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=origins if origins != ["*"] else ["*"],
+    allow_credentials=True if origins != ["*"] else False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
