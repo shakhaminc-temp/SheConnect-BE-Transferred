@@ -22,7 +22,7 @@ from app.routers.geo import router as geo_router
 from app.routers.emergency_contact import router as emergency_contact_router
 from app.routers.connect import router as connect_router
 from app.routers.carpool import router as carpool_router
-from app.utils.email_utils import load_allowed_emails
+from app.utils.email_utils import load_allowed_emails, load_colleges_from_csv
 from app.models import User, College
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -30,28 +30,26 @@ logger = logging.getLogger(__name__)
 def seed_initial_data():
     db = SessionLocal()
     try:
-        # Seed Colleges
-        existing_colleges = db.query(College).first()
-        if not existing_colleges:
-            default_colleges = [
-                College(college_name="IMCC"),
-                College(college_name="JSPM"),
-                College(college_name="Modern College"),
-                College(college_name="Fergusson College"),
-                College(college_name="Symbiosis")
-            ]
-            db.add_all(default_colleges)
+        csv_path = os.path.join(os.path.dirname(__file__), "scripts", "female_emails.csv")
+
+        # 1. Sync Colleges from female_emails.csv
+        csv_colleges = load_colleges_from_csv(csv_path)
+        existing_colleges = {c.college_name for c in db.query(College.college_name).all()}
+        
+        new_colleges = [College(college_name=name) for name in csv_colleges if name not in existing_colleges]
+        if new_colleges:
+            db.add_all(new_colleges)
             db.commit()
 
-        csv_path = os.path.join(os.path.dirname(__file__), "scripts", "female_emails.csv")
+        # 2. Sync Allowed Users from female_emails.csv
         allowed_emails = load_allowed_emails(csv_path)
         existing_emails = {user.email_id.lower() for user in db.query(User.email_id).all() if user.email_id}
         
         new_users = [User(email_id=email, is_active=False, is_verified=False) for email in allowed_emails if email not in existing_emails]
-        
         if new_users:
             db.add_all(new_users)
             db.commit()
+
     except Exception as e:
         logger.error(f"Error seeding initial data: {e}")
         db.rollback()

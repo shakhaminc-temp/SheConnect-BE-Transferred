@@ -74,14 +74,49 @@ def load_allowed_emails(file_path="app/scripts/female_emails.csv"):
 
     with open(file_path, newline="", encoding="utf-8-sig") as csvfile:
         reader = csv.DictReader(csvfile)
-        if "email" not in reader.fieldnames:
-            logger.warning(f"CSV header must have 'email'. Found: {reader.fieldnames}")
+        fieldnames = [name.strip() for name in reader.fieldnames] if reader.fieldnames else []
+        reader.fieldnames = fieldnames
+        if "email" not in fieldnames:
+            logger.warning(f"CSV header must have 'email'. Found: {fieldnames}")
             return allowed
 
         for row in reader:
-            allowed.add(row["email"].strip().lower())
+            val = (row.get("email") or "").strip().lower()
+            if val:
+                allowed.add(val)
 
     return allowed
+
+
+def load_colleges_from_csv(file_path="app/scripts/female_emails.csv"):
+    colleges = set()
+
+    if not os.path.exists(file_path):
+        logger.warning(f"File not found: {file_path}")
+        return colleges
+
+    with open(file_path, newline="", encoding="utf-8-sig") as csvfile:
+        reader = csv.DictReader(csvfile)
+        fieldnames = [name.strip() for name in reader.fieldnames] if reader.fieldnames else []
+        reader.fieldnames = fieldnames
+
+        college_col = None
+        for col in ["college_name", "college", "colleges"]:
+            if col in fieldnames:
+                college_col = col
+                break
+
+        if not college_col:
+            logger.warning(f"No college column found in CSV. Found: {fieldnames}")
+            return colleges
+
+        for row in reader:
+            val = (row.get(college_col) or "").strip()
+            if val:
+                colleges.add(val)
+
+    return colleges
+
 
 async def send_low_battery_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
     if not emails:
