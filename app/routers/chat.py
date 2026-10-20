@@ -79,6 +79,11 @@ async def websocket_endpoint(
                     await websocket.send_json({"error": "Invalid receiverId format"})
                     continue
 
+            # Handle heartbeat ping event to prevent cloud proxy disconnects
+            if event_type == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
             # Handle typing event
             if event_type == "typing":
                 is_typing = data.get("isTyping", True)

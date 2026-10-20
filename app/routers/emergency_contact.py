@@ -135,14 +135,18 @@ async def send_sos_alert(
         EmergencyContact.is_active == True
     ).all()
     
-    # Filter valid emails
+    # Filter valid emails from emergency contacts
     emails = [
         contact.email.strip() for contact in contacts 
         if contact.email and contact.email.strip() != ""
     ]
     
+    # Also add user's registered email so they or their family has a record
+    if current_user.email_id and current_user.email_id.strip() not in emails:
+        emails.append(current_user.email_id.strip())
+
     if not emails:
-        raise HTTPException(status_code=400, detail="No valid emergency contacts found with an email address. Please update your profile.")
+        raise HTTPException(status_code=400, detail="No valid emergency contact email found. Please add an emergency contact in Settings.")
     
     try:
         # Run async email sending in background
@@ -154,7 +158,7 @@ async def send_sos_alert(
             sos_data.lng,
             sos_data.location_name or ""
         )
-        return {"message": "SOS alert sent successfully"}
+        return {"message": f"SOS alert sent successfully to {len(emails)} recipient(s)"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to queue SOS alerts: {str(e)}")
 

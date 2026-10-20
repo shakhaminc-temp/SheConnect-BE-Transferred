@@ -49,20 +49,25 @@ async def get_location_name(lat: float, lng: float) -> str:
 
 async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
     if not emails:
+        logger.warning("send_sos_email called with empty emails list")
         return
         
-    if not location_name:
-        location_name = await get_location_name(lat, lng)
-        
-    html_body = get_sos_email_html(user_name, lat, lng, location_name)
-    message = MessageSchema(
-        subject=f"SOS ALERT: {user_name} needs immediate help!",
-        recipients=emails,
-        body=html_body,
-        subtype="html"
-    )
-    fm = FastMail(conf)
-    await fm.send_message(message)
+    try:
+        if not location_name:
+            location_name = await get_location_name(lat, lng)
+            
+        html_body = get_sos_email_html(user_name, lat, lng, location_name)
+        message = MessageSchema(
+            subject=f"🚨 SOS ALERT: {user_name} needs immediate help!",
+            recipients=emails,
+            body=html_body,
+            subtype="html"
+        )
+        fm = FastMail(conf)
+        await fm.send_message(message)
+        logger.info(f"SOS email successfully sent to {emails}")
+    except Exception as e:
+        logger.error(f"Failed to send SOS email to {emails}: {e}")
 
 
 def load_allowed_emails(file_path="app/scripts/female_emails.csv"):
