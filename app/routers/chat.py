@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import or_, and_
 from typing import List, Dict
 import time
+import logging
+from datetime import datetime, timezone, timedelta
 
 from jose import jwt, JWTError
 
@@ -11,6 +13,8 @@ from app.core.security import get_current_user, SECRET_KEY, ALGORITHM
 from app.models import User, Request
 from app.models.chat import Chat
 from app.schemas.schemas import ChatMessageCreate, ChatMessageResponse, ChatMessageRead
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -305,68 +309,121 @@ async def websocket_endpoint(
         manager.disconnect(user.user_id)
 
 
-# @router.post("/send", response_model=dict)
-# def send_message(
-#     payload: ChatMessageCreate,
-#     db: Session = Depends(get_db),
-#     current_user: User = Depends(get_current_user)
-# ):
-#     receiver_id = payload.receiverId
-#     message_text = payload.message
-# 
-#     if current_user.user_id == receiver_id:
-#         raise HTTPException(status_code=400, detail="Cannot send message to yourself")
-# 
-#     target_user = db.query(User).filter(User.user_id == receiver_id, User.is_active == True).first()
-#     if not target_user:
-#         raise HTTPException(status_code=404, detail="Receiver not found")
-# 
-#     accepted_request = db.query(Request).filter(
-#         Request.status == "accepted",
-#         or_(
-#             and_(Request.sent_by == current_user.user_id, Request.sent_to == receiver_id),
-#             and_(Request.sent_by == receiver_id, Request.sent_to == current_user.user_id)
-#         ),
-#         Request.is_active == True
-#     ).first()
-# 
-#     if not accepted_request:
-#         raise HTTPException(
-#             status_code=403,
-#             detail="You can only chat with users whom you have an accepted travel request with."
-#         )
-# 
-#     new_chat = Chat(
-#         request_id=accepted_request.request_id,
-#         sender_id=current_user.user_id,
-#         receiver_id=receiver_id,
-#         message=message_text
-#     )
-# 
-#     db.add(new_chat)
-#     db.commit()
-# 
-#     return {"message": "Message sent successfully"}
-# 
-# 
-# @router.post("/read", response_model=dict)
-# def mark_messages_as_read(
-#     payload: ChatMessageRead,
-#     db: Session = Depends(get_db),
-#     current_user: User = Depends(get_current_user)
-# ):
-#     chat_ids = payload.chat_ids
-#     if not chat_ids:
-#         return {"message": "No chat IDs provided"}
-# 
-#     db.query(Chat).filter(
-#         Chat.chat_id.in_(chat_ids),
-#         Chat.receiver_id == current_user.user_id
-#     ).update({"is_read": True}, synchronize_session=False)
-#     db.commit()
-# 
-#     return {"message": "Messages marked as read"}
-# 
+@router.post("/send", response_model=dict)
+def send_message(
+    payload: ChatMessageCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    receiver_id = payload.receiverId
+    message_text = payload.message.strip()
+
+    if not message_text:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    if current_user.user_id == receiver_id:
+        raise HTTPException(status_code=400, detail="Cannot send message to yourself")
+
+    target_user = db.query(User).filter(User.user_id == receiver_id, User.is_active == True).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Receiver not found")
+
+    accepted_request = db.query(Request).filter(
+        Request.status.in_(["accepted", "completed"]),
+        or_(
+            and_(Request.sent_by == current_user.user_id, Request.sent_to == receiver_id),
+            and_(Request.sent_by == receiver_id, Request.sent_to == current_user.user_id)
+        ),
+        Request.is_active == True
+    ).first()
+
+    is_carpool = False
+    if not accepted_request:
+        from app.models.carpool import CarpoolRequest, CarpoolRide
+        accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
+            CarpoolRequest.status.in_(["APPROVED", "COMPLETED"]),
+            or_(
+                and_(CarpoolRequest.rider_id == current_user.user_id, CarpoolRide.driver_id == receiver_id),
+                and_(CarpoolRequest.rider_id == receiver_id, CarpoolRide.driver_id == current_user.user_id)
+            )
+        ).first()
+        if accepted_request:
+            is_carpool = True
+
+    if not accepted_request:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only chat with users whom you have an accepted travel request with."
+        )
+
+    if is_carpool:
+        from app.models.carpool import CarpoolChat
+        new_chat = CarpoolChat(
+            request_id=accepted_request.request_id,
+            sender_id=current_user.user_id,
+            receiver_id=receiver_id,
+            message=message_text
+        )
+    else:
+        new_chat = Chat(
+            request_id=accepted_request.request_id,
+            sender_id=current_user.user_id,
+            receiver_id=receiver_id,
+            message=message_text
+        )
+
+    db.add(new_chat)
+    db.commit()
+    db.refresh(new_chat)
+
+    chat_payload = {
+        "type": "message",
+        "chat_id": new_chat.chat_id,
+        "senderId": current_user.user_id,
+        "message": message_text,
+        "created_at": new_chat.created_at.isoformat() if new_chat.created_at else None
+    }
+
+    if receiver_id in manager.active_connections:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(manager.send_personal_message(chat_payload, receiver_id))
+        except Exception as e:
+            logger.warning(f"Failed to push message via WS: {e}")
+
+    return {
+        "message": "Message sent successfully",
+        "chat": chat_payload
+    }
+
+
+@router.post("/read", response_model=dict)
+def mark_messages_as_read(
+    payload: ChatMessageRead,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    chat_ids = payload.chat_ids
+    if not chat_ids:
+        return {"message": "No chat IDs provided"}
+
+    db.query(Chat).filter(
+        Chat.chat_id.in_(chat_ids),
+        Chat.receiver_id == current_user.user_id
+    ).update({"is_read": True}, synchronize_session=False)
+
+    from app.models.carpool import CarpoolChat
+    db.query(CarpoolChat).filter(
+        CarpoolChat.chat_id.in_(chat_ids),
+        CarpoolChat.receiver_id == current_user.user_id
+    ).update({"is_read": True}, synchronize_session=False)
+
+    db.commit()
+
+    return {"message": "Messages marked as read"}
+
 @router.get("/history", response_model=dict)
 def get_chat_history_overview(
     db: Session = Depends(get_db),
@@ -440,7 +497,126 @@ def get_chat_history_overview(
     
     return {"history": result}
 
-@router.get("/{userId}", response_model=dict)
+@router.post("/emergency-partner", response_model=dict)
+def trigger_partner_emergency(
+    partner_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    HTTP fallback to send an emergency alert to a connected partner.
+    Pushes via WebSocket if the partner is online, and stores an emergency message.
+    """
+    if current_user.user_id == partner_id:
+        raise HTTPException(status_code=400, detail="Cannot send emergency alert to yourself")
+
+    # Find accepted request or approved carpool request
+    accepted_request = db.query(Request).filter(
+        Request.status.in_(["accepted", "completed"]),
+        or_(
+            and_(Request.sent_by == current_user.user_id, Request.sent_to == partner_id),
+            and_(Request.sent_by == partner_id, Request.sent_to == current_user.user_id)
+        ),
+        Request.is_active == True
+    ).first()
+
+    is_carpool = False
+    if not accepted_request:
+        from app.models.carpool import CarpoolRequest, CarpoolRide
+        accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
+            CarpoolRequest.status.in_(["APPROVED", "COMPLETED"]),
+            or_(
+                and_(CarpoolRequest.rider_id == current_user.user_id, CarpoolRide.driver_id == partner_id),
+                and_(CarpoolRequest.rider_id == partner_id, CarpoolRide.driver_id == current_user.user_id)
+            )
+        ).first()
+        if accepted_request:
+            is_carpool = True
+
+    emergency_payload = {
+        "type": "emergency",
+        "senderId": current_user.user_id,
+        "message": "EMERGENCY: User needs help!",
+        "realName": current_user.name,
+        "realCollege": current_user.college.college_name if current_user.college else None
+    }
+
+    # Deliver via active websocket if partner is online
+    if partner_id in manager.active_connections:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(manager.send_personal_message(emergency_payload, partner_id))
+        except Exception as e:
+            logger.warning(f"Failed to push emergency WS: {e}")
+
+    # Save emergency message to database chat
+    if accepted_request:
+        if is_carpool:
+            from app.models.carpool import CarpoolChat
+            db.add(CarpoolChat(
+                request_id=accepted_request.request_id,
+                sender_id=current_user.user_id,
+                receiver_id=partner_id,
+                message="🚨 EMERGENCY: I need immediate help!"
+            ))
+        else:
+            db.add(Chat(
+                request_id=accepted_request.request_id,
+                sender_id=current_user.user_id,
+                receiver_id=partner_id,
+                message="🚨 EMERGENCY: I need immediate help!"
+            ))
+        db.commit()
+
+    return {"status": "success", "message": "Emergency alert dispatched to partner", "payload": emergency_payload}
+
+
+@router.get("/emergency-partner/check", response_model=dict)
+def check_partner_emergency(
+    partner_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    HTTP polling fallback for partner to check if an emergency has been flagged by the partner.
+    """
+    one_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
+    emergency_chat = db.query(Chat).filter(
+        Chat.sender_id == partner_id,
+        Chat.receiver_id == current_user.user_id,
+        Chat.message.like("%🚨 EMERGENCY%"),
+        Chat.created_at >= one_hour_ago,
+        Chat.is_active == True
+    ).order_by(Chat.created_at.desc()).first()
+
+    if not emergency_chat:
+        from app.models.carpool import CarpoolChat
+        emergency_chat = db.query(CarpoolChat).filter(
+            CarpoolChat.sender_id == partner_id,
+            CarpoolChat.receiver_id == current_user.user_id,
+            CarpoolChat.message.like("%🚨 EMERGENCY%"),
+            CarpoolChat.created_at >= one_hour_ago,
+            CarpoolChat.is_active == True
+        ).order_by(CarpoolChat.created_at.desc()).first()
+
+    if emergency_chat:
+        partner_user = db.query(User).options(joinedload(User.college)).filter(User.user_id == partner_id).first()
+        return {
+            "has_emergency": True,
+            "emergency": {
+                "type": "emergency",
+                "senderId": partner_id,
+                "realName": partner_user.name if partner_user else "Partner",
+                "realCollege": partner_user.college.college_name if partner_user and partner_user.college else None,
+                "timestamp": emergency_chat.created_at.isoformat() if emergency_chat.created_at else None
+            }
+        }
+    return {"has_emergency": False, "emergency": None}
+
+
+@router.get("/{userId:int}", response_model=dict)
 def get_chat_messages(
     userId: int,
     request_id: int = Query(None),
