@@ -35,12 +35,19 @@ async def send_otp_email(email: str, otp: str):
 import httpx
 
 async def get_location_name(lat: float, lng: float) -> str:
+    try:
+        actual_lat, actual_lng = float(lat), float(lng)
+        if abs(actual_lat) > 90 and abs(actual_lng) <= 90:
+            actual_lat, actual_lng = actual_lng, actual_lat
+    except (ValueError, TypeError):
+        return ""
+
     # 1. Try OpenStreetMap Nominatim
     try:
-        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}"
+        url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={actual_lat}&lon={actual_lng}&zoom=18&addressdetails=1"
         async with httpx.AsyncClient() as client:
-            headers = {"User-Agent": "SheConnectApp/1.0 (Emergency Alert System; contact@sheconnect.app)"}
-            response = await client.get(url, headers=headers, timeout=5.0)
+            headers = {"User-Agent": "SheConnectApp/1.0 (Emergency Alert System; support@sheconnect.app)"}
+            response = await client.get(url, headers=headers, timeout=6.0)
             if response.status_code == 200:
                 data = response.json()
                 display_name = data.get("display_name", "").strip()
@@ -49,12 +56,31 @@ async def get_location_name(lat: float, lng: float) -> str:
     except Exception as e:
         logger.warning(f"Nominatim geocoding failed: {e}")
 
-    # 2. Fallback to Photon by Komoot reverse
+    # 2. Fallback to BigDataCloud client reverse API
     try:
-        photon_url = f"https://photon.komoot.io/reverse?lat={lat}&lon={lng}"
+        bdc_url = f"https://api.bigdatacloud.net/data/reverse-geocode-client?latitude={actual_lat}&longitude={actual_lng}&localityLanguage=en"
+        async with httpx.AsyncClient() as client:
+            response = await client.get(bdc_url, timeout=6.0)
+            if response.status_code == 200:
+                data = response.json()
+                parts = [
+                    data.get("locality"),
+                    data.get("city"),
+                    data.get("principalSubdivision"),
+                    data.get("countryName")
+                ]
+                clean = [p for p in parts if p]
+                if clean:
+                    return ", ".join(clean)
+    except Exception as e:
+        logger.warning(f"BigDataCloud geocoding failed: {e}")
+
+    # 3. Fallback to Photon by Komoot reverse
+    try:
+        photon_url = f"https://photon.komoot.io/reverse?lat={actual_lat}&lon={actual_lng}"
         async with httpx.AsyncClient() as client:
             headers = {"User-Agent": "SheConnectApp/1.0"}
-            response = await client.get(photon_url, headers=headers, timeout=5.0)
+            response = await client.get(photon_url, headers=headers, timeout=6.0)
             if response.status_code == 200:
                 data = response.json()
                 features = data.get("features", [])
