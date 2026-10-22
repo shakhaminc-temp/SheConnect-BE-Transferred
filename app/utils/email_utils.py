@@ -35,16 +35,45 @@ async def send_otp_email(email: str, otp: str):
 import httpx
 
 async def get_location_name(lat: float, lng: float) -> str:
+    # 1. Try OpenStreetMap Nominatim
     try:
         url = f"https://nominatim.openstreetmap.org/reverse?format=json&lat={lat}&lon={lng}"
         async with httpx.AsyncClient() as client:
-            headers = {"User-Agent": "SheConnectApp/1.0 (Emergency Alert System)"}
+            headers = {"User-Agent": "SheConnectApp/1.0 (Emergency Alert System; contact@sheconnect.app)"}
             response = await client.get(url, headers=headers, timeout=5.0)
             if response.status_code == 200:
                 data = response.json()
-                return data.get("display_name", "")
+                display_name = data.get("display_name", "").strip()
+                if display_name:
+                    return display_name
     except Exception as e:
-        logger.error(f"Geocoding failed: {e}")
+        logger.warning(f"Nominatim geocoding failed: {e}")
+
+    # 2. Fallback to Photon by Komoot reverse
+    try:
+        photon_url = f"https://photon.komoot.io/reverse?lat={lat}&lon={lng}"
+        async with httpx.AsyncClient() as client:
+            headers = {"User-Agent": "SheConnectApp/1.0"}
+            response = await client.get(photon_url, headers=headers, timeout=5.0)
+            if response.status_code == 200:
+                data = response.json()
+                features = data.get("features", [])
+                if features:
+                    props = features[0].get("properties", {})
+                    parts = [
+                        props.get("name"),
+                        props.get("street"),
+                        props.get("district"),
+                        props.get("city"),
+                        props.get("state"),
+                        props.get("country")
+                    ]
+                    clean_parts = [p for p in parts if p]
+                    if clean_parts:
+                        return ", ".join(clean_parts)
+    except Exception as e:
+        logger.warning(f"Photon reverse geocoding failed: {e}")
+
     return ""
 
 async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
