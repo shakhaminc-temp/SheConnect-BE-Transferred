@@ -146,7 +146,13 @@ def get_otp_email_html(otp: str) -> str:
     return html_content
 
 def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: str = "") -> str:
-    maps_url = f"https://www.google.com/maps?q={lat},{lng}"
+    # Google Maps URL format requires latitude first, then longitude: https://www.google.com/maps?q={lat},{lng}
+    # Ensure lat and lng are correctly oriented (lat is ~ -90 to +90, lng is ~ -180 to +180)
+    actual_lat, actual_lng = float(lat), float(lng)
+    if abs(actual_lat) > 90 and abs(actual_lng) <= 90:
+        actual_lat, actual_lng = actual_lng, actual_lat
+
+    maps_url = f"https://www.google.com/maps?q={actual_lat},{actual_lng}&z=16"
     clean_location = location_name.strip() if location_name and location_name.strip() != "Unknown Location" else "Location coordinates available below"
     
     return f"""
@@ -175,13 +181,13 @@ def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: st
                     {clean_location}
                 </div>
                 <div style="font-size: 13px; color: #6b7280; font-family: monospace;">
-                    <strong>GPS Coordinates:</strong> {lat}, {lng}
+                    <strong>Latitude, Longitude:</strong> {actual_lat:.6f}, {actual_lng:.6f}
                 </div>
             </div>
 
             <!-- View on Map Button -->
             <div style="text-align: center; margin: 28px 0;">
-                <a href="{maps_url}" style="background-color: #dc2626; color: #ffffff; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: 800; font-size: 16px; display: inline-block; box-shadow: 0 4px 14px rgba(220,38,38,0.4);">
+                <a href="{maps_url}" target="_blank" style="background-color: #dc2626; color: #ffffff; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: 800; font-size: 16px; display: inline-block; box-shadow: 0 4px 14px rgba(220,38,38,0.4);">
                     🗺️ Open Live Location on Google Maps
                 </a>
             </div>

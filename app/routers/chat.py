@@ -20,24 +20,43 @@ router = APIRouter(prefix="/chat", tags=["Chat"])
 
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[int, WebSocket] = {}
+        # Map user_id to list of active WebSockets (allows multiple tabs/windows per user)
+        self.active_connections: Dict[int, List[WebSocket]] = {}
 
     async def connect(self, websocket: WebSocket, user_id: int):
         await websocket.accept()
-        self.active_connections[user_id] = websocket
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = []
+        self.active_connections[user_id].append(websocket)
+        logger.info(f"User {user_id} connected to Chat WS. Total connections for user: {len(self.active_connections[user_id])}")
 
-    def disconnect(self, user_id: int):
+    def disconnect(self, user_id: int, websocket: WebSocket = None):
         if user_id in self.active_connections:
-            del self.active_connections[user_id]
+            if websocket and websocket in self.active_connections[user_id]:
+                self.active_connections[user_id].remove(websocket)
+            else:
+                self.active_connections[user_id] = []
+            
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+        logger.info(f"User {user_id} disconnected from Chat WS.")
 
     async def send_personal_message(self, message: dict, receiver_id: int):
-        if receiver_id in self.active_connections:
-            websocket = self.active_connections[receiver_id]
+        sockets = self.active_connections.get(receiver_id, [])
+        if not sockets:
+            logger.info(f"Receiver {receiver_id} is not currently connected to WebSocket (active users: {list(self.active_connections.keys())}).")
+            return
+
+        dead_sockets = []
+        for ws in sockets:
             try:
-                await websocket.send_json(message)
+                await ws.send_json(message)
             except Exception as e:
                 logger.warning(f"Failed sending to WS for user {receiver_id}: {e}")
-                self.disconnect(receiver_id)
+                dead_sockets.append(ws)
+
+        for ws in dead_sockets:
+            self.disconnect(receiver_id, ws)
 
 manager = ConnectionManager()
 
@@ -310,7 +329,7 @@ async def websocket_endpoint(
             )
 
     except WebSocketDisconnect:
-        manager.disconnect(user.user_id)
+        manager.disconnect(user.user_id, websocket)
 
 
 @router.post("/send", response_model=dict)
@@ -690,6 +709,7 @@ def get_chat_messages(
             detail="You can only view chats with users you have an accepted travel request with."
         )
 
+    # Query messages between the two users
     if request_id:
         chats = db.query(Chat).filter(
             Chat.request_id == request_id,
@@ -709,6 +729,23 @@ def get_chat_messages(
             ),
             CarpoolChat.is_active == True
         ).all()
+
+        # If specific request_id returned nothing, fallback to all active chats between this pair
+        if not chats and not carpool_chats:
+            chats = db.query(Chat).filter(
+                or_(
+                    and_(Chat.sender_id == current_user.user_id, Chat.receiver_id == userId),
+                    and_(Chat.sender_id == userId, Chat.receiver_id == current_user.user_id)
+                ),
+                Chat.is_active == True
+            ).all()
+            carpool_chats = db.query(CarpoolChat).filter(
+                or_(
+                    and_(CarpoolChat.sender_id == current_user.user_id, CarpoolChat.receiver_id == userId),
+                    and_(CarpoolChat.sender_id == userId, CarpoolChat.receiver_id == current_user.user_id)
+                ),
+                CarpoolChat.is_active == True
+            ).all()
     else:
         chats = db.query(Chat).filter(
             or_(
