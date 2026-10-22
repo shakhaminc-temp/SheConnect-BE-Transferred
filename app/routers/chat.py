@@ -33,7 +33,11 @@ class ConnectionManager:
     async def send_personal_message(self, message: dict, receiver_id: int):
         if receiver_id in self.active_connections:
             websocket = self.active_connections[receiver_id]
-            await websocket.send_json(message)
+            try:
+                await websocket.send_json(message)
+            except Exception as e:
+                logger.warning(f"Failed sending to WS for user {receiver_id}: {e}")
+                self.disconnect(receiver_id)
 
 manager = ConnectionManager()
 
@@ -205,7 +209,7 @@ async def websocket_endpoint(
                     request_id_from_client = int(request_id_from_client)
                     accepted_request = db.query(Request).filter(
                         Request.request_id == request_id_from_client,
-                        Request.status == "accepted",
+                        Request.status.in_(["accepted", "completed"]),
                         or_(
                             and_(Request.sent_by == user.user_id, Request.sent_to == receiver_id),
                             and_(Request.sent_by == receiver_id, Request.sent_to == user.user_id)
@@ -216,7 +220,7 @@ async def websocket_endpoint(
                         from app.models.carpool import CarpoolRequest, CarpoolRide
                         accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
                             CarpoolRequest.request_id == request_id_from_client,
-                            CarpoolRequest.status == "APPROVED",
+                            CarpoolRequest.status.in_(["APPROVED", "COMPLETED"]),
                             or_(
                                 and_(CarpoolRequest.rider_id == user.user_id, CarpoolRide.driver_id == receiver_id),
                                 and_(CarpoolRequest.rider_id == receiver_id, CarpoolRide.driver_id == user.user_id)
@@ -230,7 +234,7 @@ async def websocket_endpoint(
             if not accepted_request:
                 # Need to get request ID from an accepted request
                 accepted_request = db.query(Request).filter(
-                    Request.status == "accepted",
+                    Request.status.in_(["accepted", "completed"]),
                     or_(
                         and_(Request.sent_by == user.user_id, Request.sent_to == receiver_id),
                         and_(Request.sent_by == receiver_id, Request.sent_to == user.user_id)
@@ -241,7 +245,7 @@ async def websocket_endpoint(
             if not accepted_request:
                 from app.models.carpool import CarpoolRequest, CarpoolRide
                 accepted_request = db.query(CarpoolRequest).join(CarpoolRide).filter(
-                    CarpoolRequest.status == "APPROVED",
+                    CarpoolRequest.status.in_(["APPROVED", "COMPLETED"]),
                     or_(
                         and_(CarpoolRequest.rider_id == user.user_id, CarpoolRide.driver_id == receiver_id),
                         and_(CarpoolRequest.rider_id == receiver_id, CarpoolRide.driver_id == user.user_id)
@@ -587,33 +591,68 @@ def check_partner_emergency(
         Chat.sender_id == partner_id,
         Chat.receiver_id == current_user.user_id,
         Chat.message.like("%🚨 EMERGENCY%"),
+        Chat.is_read == False,
         Chat.created_at >= one_hour_ago,
         Chat.is_active == True
     ).order_by(Chat.created_at.desc()).first()
 
+    is_carpool_chat = False
     if not emergency_chat:
         from app.models.carpool import CarpoolChat
         emergency_chat = db.query(CarpoolChat).filter(
             CarpoolChat.sender_id == partner_id,
             CarpoolChat.receiver_id == current_user.user_id,
             CarpoolChat.message.like("%🚨 EMERGENCY%"),
+            CarpoolChat.is_read == False,
             CarpoolChat.created_at >= one_hour_ago,
             CarpoolChat.is_active == True
         ).order_by(CarpoolChat.created_at.desc()).first()
+        if emergency_chat:
+            is_carpool_chat = True
 
     if emergency_chat:
         partner_user = db.query(User).options(joinedload(User.college)).filter(User.user_id == partner_id).first()
         return {
             "has_emergency": True,
             "emergency": {
+                "id": emergency_chat.chat_id,
                 "type": "emergency",
                 "senderId": partner_id,
                 "realName": partner_user.name if partner_user else "Partner",
                 "realCollege": partner_user.college.college_name if partner_user and partner_user.college else None,
-                "timestamp": emergency_chat.created_at.isoformat() if emergency_chat.created_at else None
+                "timestamp": emergency_chat.created_at.isoformat() if emergency_chat.created_at else None,
+                "is_carpool": is_carpool_chat
             }
         }
     return {"has_emergency": False, "emergency": None}
+
+
+@router.post("/emergency-partner/acknowledge", response_model=dict)
+def acknowledge_partner_emergency(
+    partner_id: int = Query(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Acknowledge an emergency alert from a partner, marking the emergency messages as read so it stops alerting.
+    """
+    db.query(Chat).filter(
+        Chat.sender_id == partner_id,
+        Chat.receiver_id == current_user.user_id,
+        Chat.message.like("%🚨 EMERGENCY%"),
+        Chat.is_read == False
+    ).update({"is_read": True}, synchronize_session=False)
+
+    from app.models.carpool import CarpoolChat
+    db.query(CarpoolChat).filter(
+        CarpoolChat.sender_id == partner_id,
+        CarpoolChat.receiver_id == current_user.user_id,
+        CarpoolChat.message.like("%🚨 EMERGENCY%"),
+        CarpoolChat.is_read == False
+    ).update({"is_read": True}, synchronize_session=False)
+
+    db.commit()
+    return {"status": "success", "message": "Emergency alert acknowledged"}
 
 
 @router.get("/{userId:int}", response_model=dict)

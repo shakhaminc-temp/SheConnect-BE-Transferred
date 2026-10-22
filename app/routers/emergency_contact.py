@@ -140,13 +140,9 @@ async def send_sos_alert(
         contact.email.strip() for contact in contacts 
         if contact.email and contact.email.strip() != ""
     ]
-    
-    # Also add user's registered email so they or their family has a record
-    if current_user.email_id and current_user.email_id.strip() not in emails:
-        emails.append(current_user.email_id.strip())
 
     if not emails:
-        raise HTTPException(status_code=400, detail="No valid emergency contact email found. Please add an emergency contact in Settings.")
+        raise HTTPException(status_code=400, detail="No emergency contact emails found. Please add emergency contacts in your Profile Settings.")
     
     try:
         # Run async email sending in background
