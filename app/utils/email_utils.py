@@ -37,7 +37,8 @@ import httpx
 async def get_location_name(lat: float, lng: float) -> str:
     try:
         actual_lat, actual_lng = float(lat), float(lng)
-        if abs(actual_lat) > 90 and abs(actual_lng) <= 90:
+        # If coordinates are swapped (e.g. Pune lat 18.51, lng 73.84 was given as lat 73.84, lng 18.51)
+        if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
             actual_lat, actual_lng = actual_lng, actual_lat
     except (ValueError, TypeError):
         return ""
@@ -108,10 +109,18 @@ async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: flo
         return
         
     try:
-        if not location_name:
-            location_name = await get_location_name(lat, lng)
+        actual_lat = float(lat)
+        actual_lng = float(lng)
+        # In India / standard coords: lat is ~8 to ~37, lng is ~68 to ~98.
+        # If lat > 60 and lng < 40, they are inverted (lng was put as lat).
+        if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
+            actual_lat, actual_lng = actual_lng, actual_lat
+
+        # If location_name is empty or was previously resolved to Norway / ocean, re-resolve with corrected coords
+        if not location_name or "Norway" in location_name or "Ocean" in location_name or location_name == "Unknown Location":
+            location_name = await get_location_name(actual_lat, actual_lng)
             
-        html_body = get_sos_email_html(user_name, lat, lng, location_name)
+        html_body = get_sos_email_html(user_name, actual_lat, actual_lng, location_name)
         message = MessageSchema(
             subject=f"🚨 SOS ALERT: {user_name} needs immediate help!",
             recipients=emails,

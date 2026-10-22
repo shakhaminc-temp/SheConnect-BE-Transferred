@@ -7,7 +7,6 @@ from dotenv import load_dotenv, find_dotenv
 load_dotenv(find_dotenv())
 
 DATABASE_URL = os.getenv("DATABASE_URL")
-print("DATABASE_URL:", DATABASE_URL)
 if not DATABASE_URL:
     raise Exception("FATAL: DATABASE_URL environment variable is not set.")
 

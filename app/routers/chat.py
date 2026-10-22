@@ -81,15 +81,46 @@ def get_user_from_token(token: str, db: Session) -> User:
 @router.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    token: str,
+    token: str = None,
     db: Session = Depends(get_db)
 ):
-    user = get_user_from_token(token, db)
-    if not user:
-        await websocket.close(code=1008)
-        return
+    # Support token passed in query parameter, sec-websocket-protocol header, or headers
+    auth_token = token
+    if not auth_token:
+        subprotocols = websocket.scope.get("subprotocols", [])
+        if subprotocols:
+            auth_token = subprotocols[0]
 
-    await manager.connect(websocket, user.user_id)
+    # If auth_token provided at handshake, authenticate immediately
+    user = None
+    if auth_token:
+        user = get_user_from_token(auth_token, db)
+        if not user:
+            await websocket.close(code=1008)
+            return
+
+    # If no token at handshake, accept and wait for first auth packet
+    if not user:
+        await websocket.accept()
+        try:
+            init_data = await websocket.receive_json()
+            if init_data.get("type") == "auth":
+                auth_token = init_data.get("token")
+                user = get_user_from_token(auth_token, db)
+            if not user:
+                await websocket.close(code=1008)
+                return
+            self_user_id = user.user_id
+            if self_user_id not in manager.active_connections:
+                manager.active_connections[self_user_id] = []
+            manager.active_connections[self_user_id].append(websocket)
+            logger.info(f"User {self_user_id} authenticated via auth payload.")
+        except Exception:
+            await websocket.close(code=1008)
+            return
+    else:
+        await manager.connect(websocket, user.user_id)
+
     last_location_time = 0
 
     try:
@@ -711,6 +742,7 @@ def get_chat_messages(
 
     # Query messages between the two users
     if request_id:
+        # Strictly isolate messages to this specific trip request
         chats = db.query(Chat).filter(
             Chat.request_id == request_id,
             or_(
@@ -729,23 +761,6 @@ def get_chat_messages(
             ),
             CarpoolChat.is_active == True
         ).all()
-
-        # If specific request_id returned nothing, fallback to all active chats between this pair
-        if not chats and not carpool_chats:
-            chats = db.query(Chat).filter(
-                or_(
-                    and_(Chat.sender_id == current_user.user_id, Chat.receiver_id == userId),
-                    and_(Chat.sender_id == userId, Chat.receiver_id == current_user.user_id)
-                ),
-                Chat.is_active == True
-            ).all()
-            carpool_chats = db.query(CarpoolChat).filter(
-                or_(
-                    and_(CarpoolChat.sender_id == current_user.user_id, CarpoolChat.receiver_id == userId),
-                    and_(CarpoolChat.sender_id == userId, CarpoolChat.receiver_id == current_user.user_id)
-                ),
-                CarpoolChat.is_active == True
-            ).all()
     else:
         chats = db.query(Chat).filter(
             or_(
@@ -763,7 +778,11 @@ def get_chat_messages(
             ),
             CarpoolChat.is_active == True
         ).all()
-    
+
+    # Exclude internal system emergency alerts so they don't clutter the chat conversation
+    chats = [c for c in chats if not (c.message and "🚨 EMERGENCY" in c.message)]
+    carpool_chats = [c for c in carpool_chats if not (c.message and "🚨 EMERGENCY" in c.message)]
+
     all_chats = sorted(chats + carpool_chats, key=lambda x: (x.created_at or datetime.min))
     paginated_chats = all_chats[offset:offset+limit]
 

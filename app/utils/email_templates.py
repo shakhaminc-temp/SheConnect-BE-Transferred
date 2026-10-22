@@ -149,10 +149,10 @@ def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: st
     # Google Maps URL format requires latitude first, then longitude: https://www.google.com/maps?q={lat},{lng}
     # Ensure lat and lng are correctly oriented (lat is ~ -90 to +90, lng is ~ -180 to +180)
     actual_lat, actual_lng = float(lat), float(lng)
-    if abs(actual_lat) > 90 and abs(actual_lng) <= 90:
+    if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
         actual_lat, actual_lng = actual_lng, actual_lat
 
-    maps_url = f"https://www.google.com/maps?q={actual_lat},{actual_lng}&z=16"
+    maps_url = f"https://www.google.com/maps/search/?api=1&query={actual_lat},{actual_lng}"
     clean_location = location_name.strip() if location_name and location_name.strip() != "Unknown Location" else "Location coordinates available below"
     
     return f"""
