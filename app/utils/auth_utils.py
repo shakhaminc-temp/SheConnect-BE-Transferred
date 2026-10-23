@@ -65,12 +65,15 @@ def create_refresh_token(user_id: int):
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
-def create_otp_token(email: str, otp: str, purpose: str):
+def create_otp_token(email: str, purpose: str):
+    """
+    Creates a secure, tamper-proof OTP session token without exposing raw OTP in the JWT payload.
+    The raw OTP is securely hashed and stored in the database.
+    """
     expire = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRE_MINUTES)
 
     payload = {
         "sub": email,
-        "otp": otp,
         "purpose": purpose,
         "exp": expire
     }

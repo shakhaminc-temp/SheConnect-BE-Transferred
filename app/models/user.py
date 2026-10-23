@@ -26,6 +26,8 @@ class User(Base):
     is_verified = Column(Boolean, default=False)
     is_aadhaar_verified = Column(Boolean, default=False)
 
+    otp_hash = Column(String, nullable=True)
+    otp_expires_at = Column(DateTime, nullable=True)
     last_otp_sent_at = Column(DateTime, nullable=True)
 
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
