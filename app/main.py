@@ -58,6 +58,12 @@ async def lifespan(app: FastAPI):
     try:
         with engine.connect() as connection:
             connection.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+            # Auto-migrate any newly added columns if they don't exist yet
+            connection.execute(text("""
+                ALTER TABLE users 
+                ADD COLUMN IF NOT EXISTS otp_hash VARCHAR,
+                ADD COLUMN IF NOT EXISTS otp_expires_at TIMESTAMP;
+            """))
             connection.commit()
         Base.metadata.create_all(bind=engine)
         seed_initial_data()
