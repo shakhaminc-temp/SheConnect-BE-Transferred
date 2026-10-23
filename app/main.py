@@ -2,11 +2,7 @@ from dotenv import load_dotenv, find_dotenv
 import os
 
 dotenv_file = find_dotenv()
-print("Loading:", dotenv_file)
-
 load_dotenv(dotenv_file)
-
-print("DATABASE_URL =", repr(os.getenv("DATABASE_URL")))
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
