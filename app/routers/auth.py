@@ -13,7 +13,8 @@ from app.utils.auth_utils import (
     create_jwt_token,
     create_refresh_token,
     create_otp_token,
-    verify_otp_token
+    verify_otp_token,
+    OTP_EXPIRE_MINUTES
 )
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
@@ -95,9 +96,11 @@ async def signup(
         db.add(new_contact)
 
     otp = generate_otp()
-    otp_token = create_otp_token(existing_user.email_id, otp, "signup")
+    otp_token = create_otp_token(existing_user.email_id, "signup")
 
-    existing_user.last_otp_sent_at = datetime.now()
+    existing_user.otp_hash = hash_password(otp)
+    existing_user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRE_MINUTES)
+    existing_user.last_otp_sent_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(existing_user)
 
@@ -121,10 +124,7 @@ def verify_otp(
     if payload["sub"] != email:
         raise HTTPException(status_code=400, detail="Email mismatch")
 
-    if payload["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-
-    if payload["purpose"] != "signup":
+    if payload.get("purpose") != "signup":
         raise HTTPException(status_code=400, detail="Invalid OTP purpose")
 
     user = db.query(User).filter(User.email_id == email).first()
@@ -132,7 +132,22 @@ def verify_otp(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if not user.otp_hash:
+        raise HTTPException(status_code=400, detail="No active OTP found. Please request a new one.")
+
+    if user.otp_expires_at:
+        now_utc = datetime.now(timezone.utc)
+        exp_utc = user.otp_expires_at if user.otp_expires_at.tzinfo else user.otp_expires_at.replace(tzinfo=timezone.utc)
+        if now_utc > exp_utc:
+            raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+
+    if not verify_password(request.otp, user.otp_hash):
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    # Clear OTP after successful verification and mark verified
     user.is_verified = True
+    user.otp_hash = None
+    user.otp_expires_at = None
     db.commit()
 
     return {"message": "Email verified successfully"}
@@ -172,9 +187,11 @@ async def login(
 
     if not db_user.is_verified:
         otp = generate_otp()
-        otp_token = create_otp_token(db_user.email_id, otp, "signup")
+        otp_token = create_otp_token(db_user.email_id, "signup")
 
-        db_user.last_otp_sent_at = datetime.now()
+        db_user.otp_hash = hash_password(otp)
+        db_user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRE_MINUTES)
+        db_user.last_otp_sent_at = datetime.now(timezone.utc)
         db.commit()
 
         background_tasks.add_task(send_otp_email, db_user.email_id, otp)
@@ -229,9 +246,11 @@ async def forgot_password(
         raise HTTPException(status_code=403, detail="Please verify your email first")
 
     otp = generate_otp()
-    otp_token = create_otp_token(email, otp, "forgot")
+    otp_token = create_otp_token(email, "forgot")
 
-    user.last_otp_sent_at = datetime.now()
+    user.otp_hash = hash_password(otp)
+    user.otp_expires_at = datetime.now(timezone.utc) + timedelta(minutes=OTP_EXPIRE_MINUTES)
+    user.last_otp_sent_at = datetime.now(timezone.utc)
     db.commit()
 
     background_tasks.add_task(send_otp_email, email, otp)
@@ -245,7 +264,8 @@ async def forgot_password(
 # ================= VERIFY FORGOT OTP =================
 @router.post("/verify-forgot-otp")
 def verify_forgot_otp(
-    request: VerifyOTPRequest
+    request: VerifyOTPRequest,
+    db: Session = Depends(get_db)
 ):
     email = request.email.lower()
     payload = verify_otp_token(request.otp_token)
@@ -253,11 +273,25 @@ def verify_forgot_otp(
     if payload["sub"] != email:
         raise HTTPException(status_code=400, detail="Email mismatch")
 
-    if payload["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-
-    if payload["purpose"] != "forgot":
+    if payload.get("purpose") != "forgot":
         raise HTTPException(status_code=400, detail="Invalid OTP purpose")
+
+    user = db.query(User).filter(User.email_id == email).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.otp_hash:
+        raise HTTPException(status_code=400, detail="No active OTP found. Please request a new one.")
+
+    if user.otp_expires_at:
+        now_utc = datetime.now(timezone.utc)
+        exp_utc = user.otp_expires_at if user.otp_expires_at.tzinfo else user.otp_expires_at.replace(tzinfo=timezone.utc)
+        if now_utc > exp_utc:
+            raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+
+    if not verify_password(request.otp, user.otp_hash):
+        raise HTTPException(status_code=400, detail="Invalid OTP")
 
     return {"message": "OTP verified successfully"}
 
@@ -274,10 +308,7 @@ def reset_password(
     if payload["sub"] != email:
         raise HTTPException(status_code=400, detail="Email mismatch")
 
-    if payload["otp"] != request.otp:
-        raise HTTPException(status_code=400, detail="Invalid OTP")
-
-    if payload["purpose"] != "forgot":
+    if payload.get("purpose") != "forgot":
         raise HTTPException(status_code=400, detail="Invalid OTP purpose")
 
     user = db.query(User).filter(User.email_id == email).first()
@@ -285,11 +316,26 @@ def reset_password(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if not user.otp_hash:
+        raise HTTPException(status_code=400, detail="No active OTP found. Please request a new one.")
+
+    if user.otp_expires_at:
+        now_utc = datetime.now(timezone.utc)
+        exp_utc = user.otp_expires_at if user.otp_expires_at.tzinfo else user.otp_expires_at.replace(tzinfo=timezone.utc)
+        if now_utc > exp_utc:
+            raise HTTPException(status_code=400, detail="OTP has expired. Please request a new one.")
+
+    if not verify_password(request.otp, user.otp_hash):
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
     is_valid, message = validate_password(request.new_password)
     if not is_valid:
         raise HTTPException(status_code=400, detail=message)
 
     user.password = hash_password(request.new_password)
+    # Invalidate OTP once password has been successfully reset
+    user.otp_hash = None
+    user.otp_expires_at = None
     db.commit()
 
     return {"message": "Password reset successful"}
@@ -314,13 +360,18 @@ async def resend_otp(
     if request.purpose == "signup" and user.is_verified:
         raise HTTPException(status_code=400, detail="User already verified")
 
-    if user.last_otp_sent_at and datetime.now() < user.last_otp_sent_at + timedelta(seconds=60):
-        raise HTTPException(status_code=429, detail="Please wait 60 seconds before resending OTP")
+    now_utc = datetime.now(timezone.utc)
+    if user.last_otp_sent_at:
+        last_sent = user.last_otp_sent_at if user.last_otp_sent_at.tzinfo else user.last_otp_sent_at.replace(tzinfo=timezone.utc)
+        if now_utc < last_sent + timedelta(seconds=60):
+            raise HTTPException(status_code=429, detail="Please wait 60 seconds before resending OTP")
 
     otp = generate_otp()
-    otp_token = create_otp_token(email, otp, request.purpose)
+    otp_token = create_otp_token(email, request.purpose)
 
-    user.last_otp_sent_at = datetime.now()
+    user.otp_hash = hash_password(otp)
+    user.otp_expires_at = now_utc + timedelta(minutes=OTP_EXPIRE_MINUTES)
+    user.last_otp_sent_at = now_utc
     db.commit()
 
     background_tasks.add_task(send_otp_email, email, otp)

@@ -161,7 +161,8 @@ async def websocket_endpoint(
                             "senderId": user.user_id,
                             "message": "EMERGENCY: User needs help!",
                             "realName": user.name,
-                            "realCollege": user.college.college_name if user.college else None
+                            "realCollege": user.college.college_name if user.college else None,
+                            "realPhone": user.phone_no
                         },
                         receiver_id
                     )
@@ -592,7 +593,8 @@ def trigger_partner_emergency(
         "senderId": current_user.user_id,
         "message": "EMERGENCY: User needs help!",
         "realName": current_user.name,
-        "realCollege": current_user.college.college_name if current_user.college else None
+        "realCollege": current_user.college.college_name if current_user.college else None,
+        "realPhone": current_user.phone_no
     }
 
     # Deliver via active websocket if partner is online
@@ -670,6 +672,7 @@ def check_partner_emergency(
                 "senderId": partner_id,
                 "realName": partner_user.name if partner_user else "Partner",
                 "realCollege": partner_user.college.college_name if partner_user and partner_user.college else None,
+                "realPhone": partner_user.phone_no if partner_user else None,
                 "timestamp": emergency_chat.created_at.isoformat() if emergency_chat.created_at else None,
                 "is_carpool": is_carpool_chat
             }
