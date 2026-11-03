@@ -190,3 +190,5 @@ class SOSRequest(BaseModel):
     lat: float
     lng: float
     location_name: Optional[str] = None
+    accuracy: Optional[float] = None
+    source: Optional[str] = None

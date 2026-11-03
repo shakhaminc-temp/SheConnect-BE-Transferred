@@ -18,6 +18,7 @@ from app.routers.geo import router as geo_router
 from app.routers.emergency_contact import router as emergency_contact_router
 from app.routers.connect import router as connect_router
 from app.routers.carpool import router as carpool_router
+from app.routers.admin import router as admin_router
 from app.utils.email_utils import load_allowed_emails, load_colleges_from_csv
 from app.models import User, College
 logging.basicConfig(level=logging.INFO)
@@ -97,6 +98,7 @@ app.include_router(blog_router)
 app.include_router(connect_router)
 app.include_router(emergency_contact_router)
 app.include_router(carpool_router)
+app.include_router(admin_router)
 
 @app.get("/")
 def home():

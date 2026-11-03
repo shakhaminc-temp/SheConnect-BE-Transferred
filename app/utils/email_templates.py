@@ -145,14 +145,28 @@ def get_otp_email_html(otp: str) -> str:
     
     return html_content
 
-def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: str = "") -> str:
-    # Google Maps URL format requires latitude first, then longitude: https://www.google.com/maps?q={lat},{lng}
-    # Ensure lat and lng are correctly oriented (lat is ~ -90 to +90, lng is ~ -180 to +180)
-    actual_lat, actual_lng = float(lat), float(lng)
-    if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
-        actual_lat, actual_lng = actual_lng, actual_lat
+def normalize_lat_lng(lat: float, lng: float) -> tuple[float, float]:
+    try:
+        a_lat = float(lat)
+        a_lng = float(lng)
+    except (ValueError, TypeError):
+        return 0.0, 0.0
 
-    maps_url = f"https://www.google.com/maps/search/?api=1&query={actual_lat},{actual_lng}"
+    if abs(a_lat) > 90 and abs(a_lng) <= 90:
+        return a_lng, a_lat
+    if abs(a_lng) > 90 and abs(a_lat) <= 90:
+        return a_lat, a_lng
+
+    if (60 <= a_lat <= 100) and (0 <= a_lng <= 45):
+        return a_lng, a_lat
+
+    return a_lat, a_lng
+
+def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: str = "", accuracy: float = None, source: str = None) -> str:
+    actual_lat, actual_lng = normalize_lat_lng(lat, lng)
+
+    maps_url = f"https://www.google.com/maps?q={actual_lat},{actual_lng}&z=17"
+    directions_url = f"https://www.google.com/maps/dir/?api=1&destination={actual_lat},{actual_lng}"
     clean_location = location_name.strip() if location_name and location_name.strip() != "Unknown Location" else "Location coordinates available below"
     
     return f"""
@@ -183,12 +197,18 @@ def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: st
                 <div style="font-size: 13px; color: #6b7280; font-family: monospace;">
                     <strong>Latitude, Longitude:</strong> {actual_lat:.6f}, {actual_lng:.6f}
                 </div>
+                {f'''<div style="margin-top: 10px; display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: bold; background-color: #fee2e2; color: #991b1b;">
+                    📡 Source: {source} {f"(±{int(accuracy)}m)" if accuracy else ""}
+                </div>''' if source else ''}
             </div>
 
-            <!-- View on Map Button -->
-            <div style="text-align: center; margin: 28px 0;">
-                <a href="{maps_url}" target="_blank" style="background-color: #dc2626; color: #ffffff; padding: 16px 32px; text-decoration: none; border-radius: 12px; font-weight: 800; font-size: 16px; display: inline-block; box-shadow: 0 4px 14px rgba(220,38,38,0.4);">
-                    🗺️ Open Live Location on Google Maps
+            <!-- View on Map / Get Directions Buttons -->
+            <div style="text-align: center; margin: 28px 0; display: flex; flex-direction: column; gap: 12px; align-items: center;">
+                <a href="{maps_url}" target="_blank" style="background-color: #dc2626; color: #ffffff; padding: 15px 28px; text-decoration: none; border-radius: 12px; font-weight: 800; font-size: 16px; display: inline-block; box-shadow: 0 4px 14px rgba(220,38,38,0.4); width: 80%; max-width: 320px; text-align: center;">
+                    🗺️ Open Location on Google Maps
+                </a>
+                <a href="{directions_url}" target="_blank" style="background-color: #111827; color: #ffffff; padding: 13px 28px; text-decoration: none; border-radius: 12px; font-weight: 700; font-size: 14px; display: inline-block; width: 80%; max-width: 320px; text-align: center;">
+                    🚗 Navigate & Get Directions
                 </a>
             </div>
 
@@ -209,7 +229,8 @@ def get_sos_email_html(user_name: str, lat: float, lng: float, location_name: st
     """
 
 def get_low_battery_email_html(user_name: str, lat: float, lng: float, location_name: str = "") -> str:
-    maps_url = f"https://www.google.com/maps?q={lat},{lng}"
+    actual_lat, actual_lng = normalize_lat_lng(lat, lng)
+    maps_url = f"https://www.google.com/maps?q={actual_lat},{actual_lng}&z=17"
     location_display = f"<div style='font-size: 18px; font-weight: bold; color: #111827; margin-bottom: 10px;'>{location_name}</div>" if location_name and location_name != "Unknown Location" else ""
     return f"""
     <!DOCTYPE html>
@@ -228,7 +249,7 @@ def get_low_battery_email_html(user_name: str, lat: float, lng: float, location_
             </p>
             {location_display}
             <p style="font-size: 14px; color: #6b7280; margin-top: 0;">
-                Coordinates: {lat}, {lng}
+                Coordinates: {actual_lat:.6f}, {actual_lng:.6f}
             </p>
             <div style="text-align: center; margin: 30px 0;">
                 <a href="{maps_url}" style="background-color: #f59e0b; color: white; padding: 15px 25px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 18px; display: inline-block;">
