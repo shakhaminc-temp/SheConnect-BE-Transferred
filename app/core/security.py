@@ -2,7 +2,7 @@ import bcrypt
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import jwt, JWTError
 from fastapi import HTTPException, Depends
-from app.models import User
+from app.models import User, Admin
 from app.core.database import get_db
 from sqlalchemy.orm import Session
 import os
@@ -12,7 +12,6 @@ if not SECRET_KEY:
     raise RuntimeError("FATAL: SECRET_KEY environment variable is not set.")
 ALGORITHM = "HS256"
 
-# pwd_context removed
 security = HTTPBearer()
 
 
@@ -55,6 +54,7 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(securit
 
     return user
 
+
 def get_current_user_from_refresh_token(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
     token = credentials.credentials
     try:
@@ -77,3 +77,38 @@ def get_current_user_from_refresh_token(credentials: HTTPAuthorizationCredential
         raise HTTPException(status_code=401, detail="User not found or inactive")
 
     return user
+
+
+def get_current_admin(credentials: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)) -> Admin:
+    """
+    Validates and extracts an authenticated Admin (Super Admin or Institute Admin).
+    """
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        admin_id: int = payload.get("admin_id")
+        scope: str = payload.get("scope")
+
+        if not admin_id or scope != "admin":
+            raise HTTPException(status_code=401, detail="Invalid or non-admin token")
+
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Invalid or expired admin token")
+
+    admin = db.query(Admin).filter(Admin.admin_id == admin_id).first()
+    if not admin:
+        raise HTTPException(status_code=404, detail="Admin account not found")
+
+    if not admin.is_active:
+        raise HTTPException(status_code=403, detail="Admin account is deactivated")
+
+    return admin
+
+
+def require_super_admin(admin: Admin = Depends(get_current_admin)) -> Admin:
+    """
+    Enforces that the authenticated admin has the SUPER_ADMIN role.
+    """
+    if admin.role != "SUPER_ADMIN":
+        raise HTTPException(status_code=403, detail="Super Admin privileges required for this action")
+    return admin

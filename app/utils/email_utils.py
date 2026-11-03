@@ -34,13 +34,28 @@ async def send_otp_email(email: str, otp: str):
 
 import httpx
 
-async def get_location_name(lat: float, lng: float) -> str:
+def normalize_lat_lng(lat: float, lng: float) -> tuple[float, float]:
     try:
-        actual_lat, actual_lng = float(lat), float(lng)
-        # If coordinates are swapped (e.g. Pune lat 18.51, lng 73.84 was given as lat 73.84, lng 18.51)
-        if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
-            actual_lat, actual_lng = actual_lng, actual_lat
+        a_lat = float(lat)
+        a_lng = float(lng)
     except (ValueError, TypeError):
+        return 0.0, 0.0
+
+    # Latitude must be between -90 and +90
+    if abs(a_lat) > 90 and abs(a_lng) <= 90:
+        return a_lng, a_lat
+    if abs(a_lng) > 90 and abs(a_lat) <= 90:
+        return a_lat, a_lng
+
+    # India/South Asia check: Lat 6°-38° N, Lng 60°-98° E
+    if (60 <= a_lat <= 100) and (0 <= a_lng <= 45):
+        return a_lng, a_lat
+
+    return a_lat, a_lng
+
+async def get_location_name(lat: float, lng: float) -> str:
+    actual_lat, actual_lng = normalize_lat_lng(lat, lng)
+    if actual_lat == 0.0 and actual_lng == 0.0:
         return ""
 
     # 1. Try OpenStreetMap Nominatim
@@ -103,24 +118,23 @@ async def get_location_name(lat: float, lng: float) -> str:
 
     return ""
 
-async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = ""):
+async def send_sos_email(emails: list[str], user_name: str, lat: float, lng: float, location_name: str = "", accuracy: float = None, source: str = None):
     if not emails:
         logger.warning("send_sos_email called with empty emails list")
         return
         
     try:
-        actual_lat = float(lat)
-        actual_lng = float(lng)
-        # In India / standard coords: lat is ~8 to ~37, lng is ~68 to ~98.
-        # If lat > 60 and lng < 40, they are inverted (lng was put as lat).
-        if (abs(actual_lat) > 50 and abs(actual_lng) <= 50) or (abs(actual_lat) > 90 and abs(actual_lng) <= 90):
-            actual_lat, actual_lng = actual_lng, actual_lat
+        actual_lat, actual_lng = normalize_lat_lng(lat, lng)
 
-        # If location_name is empty or was previously resolved to Norway / ocean, re-resolve with corrected coords
-        if not location_name or "Norway" in location_name or "Ocean" in location_name or location_name == "Unknown Location":
-            location_name = await get_location_name(actual_lat, actual_lng)
+        # If location_name is empty or contaminated with oceanic/arctic anomalies from past inversion, re-resolve
+        invalid_keywords = ["norway", "ocean", "unknown location", "antarctica", "svalbard"]
+        name_lower = (location_name or "").lower()
+        if not location_name or any(kw in name_lower for kw in invalid_keywords):
+            resolved = await get_location_name(actual_lat, actual_lng)
+            if resolved:
+                location_name = resolved
             
-        html_body = get_sos_email_html(user_name, actual_lat, actual_lng, location_name)
+        html_body = get_sos_email_html(user_name, actual_lat, actual_lng, location_name, accuracy=accuracy, source=source)
         message = MessageSchema(
             subject=f"🚨 SOS ALERT: {user_name} needs immediate help!",
             recipients=emails,
@@ -191,10 +205,11 @@ async def send_low_battery_email(emails: list[str], user_name: str, lat: float, 
     if not emails:
         return
         
+    actual_lat, actual_lng = normalize_lat_lng(lat, lng)
     if not location_name:
-        location_name = await get_location_name(lat, lng)
+        location_name = await get_location_name(actual_lat, actual_lng)
         
-    html_body = get_low_battery_email_html(user_name, lat, lng, location_name)
+    html_body = get_low_battery_email_html(user_name, actual_lat, actual_lng, location_name)
     message = MessageSchema(
         subject=f"⚠️ LOW BATTERY ALERT: {user_name}'s phone is dying!",
         recipients=emails,
